@@ -6,16 +6,25 @@ its debounce). All the genuinely tricky logic (shift state, name->char) lives in
 the pure KeyDecoder/keymap and is unit-tested; this file is the I/O glue that
 can only be verified on hardware, so it is kept thin.
 
+Reading runs on a background daemon thread that continuously drains the kernel
+evdev buffer into an unbounded in-process queue. This is essential on e-paper:
+the main loop blocks for ~0.7s (partial) or ~4s (full) inside each panel
+refresh, and if nothing drained the keyboard during that window the small
+kernel buffer would overflow and *drop* keystrokes when typing fast. The panel's
+SPI transfer and busy-wait release the GIL, so the reader thread runs even on
+the single-core Zero while the main thread is rendering.
+
 Robustness the brief demands:
   * device discovery -- pick the keyboard out of /dev/input/event*
   * graceful reconnect -- a foldable BT keyboard's device node vanishes when it
-    sleeps; we must never crash, just keep polling until it reappears
+    sleeps; the reader thread keeps polling and never crashes on a vanished node
 """
 
 import logging
+import queue
 import select
+import threading
 import time
-from collections import deque
 
 from input.decoder import KeyDecoder
 
@@ -33,9 +42,11 @@ class EvdevKeyboard:
         self._ecodes = ecodes
         self._preferred_path = device_path
         self._reconnect_poll_s = reconnect_poll_s
-        self._device = None
         self._decoder = KeyDecoder()
-        self._queue: deque[str] = deque()
+        self._chars: queue.Queue[str] = queue.Queue()
+        self._stop = threading.Event()
+        self._reader = threading.Thread(target=self._read_loop, name="evdev-reader", daemon=True)
+        self._reader.start()
 
     # -- discovery / connection -------------------------------------------------
 
@@ -60,56 +71,61 @@ class EvdevKeyboard:
                 return device
         return None
 
-    def _ensure_device(self) -> bool:
-        if self._device is None:
-            self._device = self._find_device()
-        return self._device is not None
-
     def is_present(self) -> bool:
         """Whether a keyboard is currently discoverable (used by the boot wait)."""
         device = self._find_device()
         if device is None:
             return False
-        if device is not self._device:  # close the probe; keep the one we use
-            try:
-                device.close()
-            except OSError:
-                pass
+        try:
+            device.close()
+        except OSError:
+            pass
         return True
 
-    # -- reading ----------------------------------------------------------------
+    # -- reading (background thread) --------------------------------------------
+
+    def _read_loop(self) -> None:
+        device = None
+        try:
+            while not self._stop.is_set():
+                if device is None:
+                    device = self._find_device()
+                    if device is None:
+                        # No keyboard yet (asleep / not paired). Wait, don't spin.
+                        self._stop.wait(self._reconnect_poll_s)
+                        continue
+                try:
+                    # Short timeout so we notice a stop request / reconnect promptly.
+                    readable, _, _ = select.select([device.fd], [], [], 0.2)
+                    if not readable:
+                        continue
+                    for event in device.read():
+                        if event.type != self._ecodes.EV_KEY:
+                            continue
+                        name = self._key_name(event.code)
+                        if name is None:
+                            continue
+                        char = self._decoder.feed(name, event.value)
+                        if char is not None:
+                            self._chars.put(char)
+                except OSError:
+                    # The BT keyboard slept and its node vanished mid-read. Drop
+                    # it; we'll rediscover it when it wakes.
+                    logger.warning("keyboard disconnected; awaiting reconnect")
+                    device = None
+        finally:
+            if device is not None:
+                try:
+                    device.close()
+                except OSError:
+                    pass
 
     def next(self, timeout_ms: int):
-        if self._queue:
-            return self._queue.popleft()
-
-        if not self._ensure_device():
-            # No keyboard yet (asleep / not paired). Wait a beat so we don't
-            # busy-spin, then report a timeout so the loop can still flush.
-            time.sleep(min(self._reconnect_poll_s, max(timeout_ms / 1000.0, 0.0)))
-            return None
-
+        """Return the next typed character, or None if none within the timeout."""
         try:
-            readable, _, _ = select.select([self._device.fd], [], [], timeout_ms / 1000.0)
-            if not readable:
-                return None  # poll timeout -> debounce tick
-            for event in self._device.read():
-                if event.type != self._ecodes.EV_KEY:
-                    continue
-                name = self._key_name(event.code)
-                if name is None:
-                    continue
-                char = self._decoder.feed(name, event.value)
-                if char is not None:
-                    self._queue.append(char)
-        except OSError:
-            # The BT keyboard slept and its node disappeared mid-read. Drop it;
-            # _ensure_device() will rediscover it when it wakes.
-            logger.warning("keyboard disconnected; awaiting reconnect")
-            self._device = None
+            return self._chars.get(timeout=timeout_ms / 1000.0)
+        except queue.Empty:
             return None
-
-        return self._queue.popleft() if self._queue else None
 
     def _key_name(self, code):
         name = self._ecodes.KEY.get(code)
@@ -118,9 +134,5 @@ class EvdevKeyboard:
         return name
 
     def close(self) -> None:
-        if self._device is not None:
-            try:
-                self._device.close()
-            except OSError:
-                pass
-            self._device = None
+        self._stop.set()
+        self._reader.join(timeout=1.0)
