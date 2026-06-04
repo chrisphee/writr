@@ -17,7 +17,14 @@ def _load_font(font_paths, size):
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    return ImageFont.load_default(size=size)
+    # No TTF found. Fall back to PIL's builtin font. Raspberry Pi OS (Bookworm)
+    # ships Pillow 9.4, whose load_default() has no size argument (added in
+    # 10.1), so degrade gracefully rather than crash -- though installing
+    # fonts-dejavu-core is strongly preferred for legible text.
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 class Renderer:

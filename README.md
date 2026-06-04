@@ -89,8 +89,11 @@ Target: Raspberry Pi (Zero WH / Zero 2 W) running Raspberry Pi OS Lite
 Install dependencies via apt (no slow pip source-builds on ARMv6):
 
 ```bash
-sudo apt install python3-pil python3-evdev python3-spidev python3-gpiozero python3-lgpio
+sudo apt install python3-pil python3-evdev python3-spidev python3-gpiozero python3-lgpio fonts-dejavu-core
 ```
+
+(`fonts-dejavu-core` provides the monospace font; Raspberry Pi OS Lite does not
+ship it. Without it the editor still runs but falls back to a tiny bitmap font.)
 
 > **Dependency note (verified against the driver source):** the current upstream
 > `epdconfig.py` drives GPIO through **`gpiozero`** (with the `lgpio` pin factory
