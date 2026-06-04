@@ -1,0 +1,20 @@
+[Unit]
+Description=writerdeck e-ink modal text editor
+# The Bluetooth keyboard pairs after boot; the app also waits for it itself.
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=ratthew
+WorkingDirectory=/home/ratthew/writerdeck
+ExecStart=/usr/bin/python3 main.py
+# A writerdeck should always come back up if it falls over.
+Restart=on-failure
+RestartSec=2
+# No TTY needed: input comes from evdev, output goes straight to the SPI panel.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -65,6 +65,18 @@ class EvdevKeyboard:
             self._device = self._find_device()
         return self._device is not None
 
+    def is_present(self) -> bool:
+        """Whether a keyboard is currently discoverable (used by the boot wait)."""
+        device = self._find_device()
+        if device is None:
+            return False
+        if device is not self._device:  # close the probe; keep the one we use
+            try:
+                device.close()
+            except OSError:
+                pass
+        return True
+
     # -- reading ----------------------------------------------------------------
 
     def next(self, timeout_ms: int):

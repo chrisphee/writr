@@ -16,6 +16,7 @@ from app import Editor, run_picker
 from config import Config
 from drafts import DraftStore
 from editor.buffer import TextBuffer
+from editor.frame import Frame
 from editor.modal import ModalEditor
 from editor.refresh import GhostingCounter, RefreshPolicy
 from picker import FilePicker
@@ -41,6 +42,22 @@ def build_display(backend: str, config: Config):
 
 def monotonic_ms() -> int:
     return time.monotonic_ns() // 1_000_000
+
+
+def wait_for_keyboard(is_present, sleep, poll_seconds: float = 1.0, max_attempts=None) -> bool:
+    """Poll until a keyboard is present; return True once it is.
+
+    On boot the Bluetooth keyboard may take a few seconds to pair. We poll
+    rather than crash on its absence. Returns False if ``max_attempts`` is set
+    and exhausted (None = wait indefinitely, which is what a writerdeck wants).
+    """
+    attempt = 0
+    while max_attempts is None or attempt < max_attempts:
+        if is_present():
+            return True
+        sleep(poll_seconds)
+        attempt += 1
+    return False
 
 
 def open_or_create(store: DraftStore, keyboard, display):
@@ -88,6 +105,15 @@ def main(argv=None) -> None:
     store = DraftStore(config.drafts_dir, extension=config.draft_extension)
 
     try:
+        # On boot the Bluetooth keyboard may not be paired yet; show a notice and
+        # wait for it rather than crash or open the picker with no way to drive it.
+        if not keyboard.is_present():
+            display.present(
+                Frame(lines=("Waiting for keyboard...",), cursor=(0, 0), status="writerdeck"),
+                full=True,
+            )
+            wait_for_keyboard(keyboard.is_present, time.sleep)
+
         path, buffer = open_or_create(store, keyboard, display)
         if path is None:
             return  # picker dismissed; nothing to edit

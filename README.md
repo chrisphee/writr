@@ -12,11 +12,12 @@ driver. This is a clean rewrite for the **4.26"** panel — it does **not** use 
 
 ## Status
 
-Milestones **M1 (type-and-see loop)**, **M2 (modal editing)**, **M3 (refresh
-tuning)**, and **M4 (files & autosave)** are implemented and tested: launch file
-picker → evdev keyboard → modal state machine → text buffer → refresh decision →
-renderer → display, with crash-safe autosave to `~/drafts/`. Boot integration
-(M5) is next.
+All five milestones are implemented and tested — **M1** type-and-see loop,
+**M2** modal editing, **M3** refresh tuning, **M4** files & autosave, **M5** boot
+integration: launch file picker → evdev keyboard → modal state machine → text
+buffer → refresh decision → renderer → display, with crash-safe autosave to
+`~/drafts/` and a systemd service that waits for the keyboard and runs on boot.
+Ready for on-device testing.
 
 On launch you get a **file picker** (drafts most-recent-first, `j/k` to move,
 `Enter` to open, `n` for a new draft). New drafts are named by timestamp
@@ -109,7 +110,29 @@ python3 main.py --backend mock   # force the PNG mock (writes ./mock_frames/)
 
 The Bluetooth keyboard is auto-discovered among `/dev/input/event*`. If it sleeps
 and its device node disappears, the editor keeps polling and reconnects when it
-wakes — it will not crash on a vanished device.
+wakes — it will not crash on a vanished device. On launch it shows
+"Waiting for keyboard..." until one appears.
+
+The user needs access to the input, SPI and GPIO devices:
+
+```bash
+sudo usermod -aG input,spi,gpio ratthew   # log out/in (or reboot) afterwards
+```
+
+### Run on boot (systemd)
+
+```bash
+sudo cp ~/writerdeck/deploy/writerdeck.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now writerdeck.service
+journalctl -u writerdeck -f          # watch its logs
+```
+
+The service runs `main.py` as user `ratthew`, waits for the keyboard, restarts on
+failure, and needs no TTY (input is evdev, output is the SPI panel). Edit the
+unit's `User`/paths if you deploy elsewhere. Prefer cron? A `@reboot` crontab
+entry (`@reboot cd ~/writerdeck && python3 main.py`) also works but won't restart
+on crash.
 
 ## Credits & licensing
 
