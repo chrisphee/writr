@@ -7,7 +7,7 @@ deterministically without sleeping and without float-comparison jitter.
 Dependency-free.
 """
 
-from editor.refresh import RefreshPolicy
+from editor.refresh import GhostingCounter, RefreshPolicy
 
 
 def test_word_boundary_keystroke_triggers_an_immediate_refresh():
@@ -53,3 +53,21 @@ def test_after_a_refresh_nothing_is_due_until_more_typing():
     policy.mark_refreshed()
 
     assert policy.due(now_ms=10_000) is False  # flushed; wait for new input
+
+
+def test_every_nth_refresh_is_a_full_refresh_to_clear_ghosting():
+    counter = GhostingCounter(full_every=3)
+
+    pattern = [counter.next_is_full() for _ in range(7)]
+
+    assert pattern == [False, False, True, False, False, True, False]
+
+
+def test_reset_restarts_the_partial_count():
+    counter = GhostingCounter(full_every=3)
+    counter.next_is_full()
+    counter.next_is_full()  # two partials accumulated
+
+    counter.reset()  # e.g. after a full refresh forced elsewhere (file save)
+
+    assert counter.next_is_full() is False  # count started over

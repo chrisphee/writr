@@ -12,10 +12,10 @@ driver. This is a clean rewrite for the **4.26"** panel — it does **not** use 
 
 ## Status
 
-Milestones **M1 (type-and-see loop)** and **M2 (modal editing)** are implemented
-and tested: evdev keyboard → modal state machine → text buffer → refresh decision
-→ renderer → display (PNG mock for development, real panel on the Pi). Refresh
-tuning (M3) is next.
+Milestones **M1 (type-and-see loop)**, **M2 (modal editing)**, and **M3 (refresh
+tuning)** are implemented and tested: evdev keyboard → modal state machine → text
+buffer → refresh decision → renderer → display (PNG mock for development, real
+panel on the Pi). Files/autosave (M4) is next.
 
 The editor launches in NORMAL, like vim:
 
@@ -30,6 +30,14 @@ mode there is **no per-keystroke refresh**. A partial refresh fires on a word
 boundary (space / Enter) or after a short typing pause (debounce, default
 400 ms) — whichever comes first. (Word motions use simplified whitespace-word
 semantics; vertical motion clamps the column rather than remembering it.)
+
+**Refresh tuning (M3).** Partial refreshes accumulate ghosting, so every Nth
+refresh (`full_refresh_every`, default 30) is promoted to a full,
+ghosting-clearing refresh. Timings are configurable in [config.py](config.py)
+(`debounce_ms`, `full_refresh_every`). The vendored `epd4in26.display_Partial`
+resets the panel window to full-screen and writes the whole framebuffer, so it
+does **not** expose arbitrary-region partial updates — the editor therefore uses
+full-frame partials, which the panel handles in ~0.7s.
 
 ## Architecture
 

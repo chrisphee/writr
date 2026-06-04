@@ -33,3 +33,27 @@ class RefreshPolicy:
     def mark_refreshed(self) -> None:
         """Tell the policy a refresh just happened; clears the batched change."""
         self._pending = False
+
+
+class GhostingCounter:
+    """Decides when a refresh should be a full (ghosting-clearing) one.
+
+    Partial refreshes accumulate ghosting on e-paper, so every ``full_every``
+    refreshes one is promoted to a full refresh. The loop calls next_is_full()
+    once per refresh; reset() restarts the count after a full refresh forced
+    elsewhere (e.g. on file save).
+    """
+
+    def __init__(self, full_every: int):
+        self._full_every = full_every
+        self._count = 0
+
+    def next_is_full(self) -> bool:
+        self._count += 1
+        if self._count >= self._full_every:
+            self._count = 0
+            return True
+        return False
+
+    def reset(self) -> None:
+        self._count = 0

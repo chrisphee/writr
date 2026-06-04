@@ -20,13 +20,14 @@ QUIT = object()
 
 
 class Editor:
-    def __init__(self, *, state, policy, source, display, now_ms, poll_ms):
+    def __init__(self, *, state, policy, source, display, now_ms, poll_ms, ghosting=None):
         self._state = state
         self._policy = policy
         self._source = source
         self._display = display
         self._now_ms = now_ms
         self._poll_ms = poll_ms
+        self._ghosting = ghosting
 
     def run(self) -> None:
         while True:
@@ -49,11 +50,12 @@ class Editor:
             # Outcome.NONE: the key did nothing; no refresh.
 
     def _refresh(self) -> None:
+        full = self._ghosting.next_is_full() if self._ghosting is not None else False
         buffer = self._state.buffer
         frame = Frame(
             lines=buffer.lines,
             cursor=buffer.cursor,
             status=f"{self._state.mode.value}  {buffer.word_count} words",
         )
-        self._display.present(frame, full=False)
+        self._display.present(frame, full=full)
         self._policy.mark_refreshed()

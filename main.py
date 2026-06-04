@@ -14,7 +14,8 @@ import time
 from app import Editor
 from config import Config
 from editor.buffer import TextBuffer
-from editor.refresh import RefreshPolicy
+from editor.modal import ModalEditor
+from editor.refresh import GhostingCounter, RefreshPolicy
 
 
 def is_raspberry_pi() -> bool:
@@ -68,12 +69,13 @@ def main(argv=None) -> None:
     keyboard = EvdevKeyboard(device_path=args.device)
 
     editor = Editor(
-        buffer=TextBuffer(),
+        state=ModalEditor(TextBuffer()),  # launches in NORMAL
         policy=RefreshPolicy(debounce_ms=config.debounce_ms),
         source=keyboard,
         display=display,
         now_ms=monotonic_ms,
         poll_ms=100,  # 10Hz idle poll: fine enough to honour the debounce
+        ghosting=GhostingCounter(full_every=config.full_refresh_every),
     )
 
     try:

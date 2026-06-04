@@ -10,7 +10,7 @@ never on the loop's internals.
 from app import Editor, QUIT
 from editor.buffer import TextBuffer
 from editor.modal import Mode, ModalEditor
-from editor.refresh import RefreshPolicy
+from editor.refresh import GhostingCounter, RefreshPolicy
 
 
 class FakeClock:
@@ -99,6 +99,25 @@ def test_normal_mode_noop_command_does_not_refresh():
     editor.run()
 
     assert display.calls == []  # nothing moved, so no wasted e-paper refresh
+
+
+def test_a_full_refresh_is_forced_every_n_refreshes_to_clear_ghosting():
+    clock = FakeClock()
+    display = RecordingDisplay()
+    editor = Editor(
+        state=ModalEditor(TextBuffer.from_text("l0\nl1\nl2\nl3\nl4\nl5\nl6")),  # NORMAL
+        policy=RefreshPolicy(debounce_ms=400),
+        source=ScriptedInput(clock, [(5, "j")] * 6 + [(0, QUIT)]),  # 6 down moves
+        display=display,
+        now_ms=lambda: clock.now_ms,
+        poll_ms=100,
+        ghosting=GhostingCounter(full_every=3),
+    )
+
+    editor.run()
+
+    kinds = [kind for kind, _ in display.calls]
+    assert kinds == ["partial", "partial", "full", "partial", "partial", "full"]
 
 
 def test_typing_a_word_then_a_space_causes_exactly_one_partial_refresh():
