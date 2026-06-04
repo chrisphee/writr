@@ -1,108 +1,106 @@
-# zerowriter
+# writerdeck
 
-important update: raspberry pi OS has changed GPIO support, so it is important you use archived versions of the OS: https://github.com/zerowriter/zerowriter1/issues/26#issuecomment-2466903737
+A minimal, distraction-free **modal (vim-style) text editor** for a DIY e-ink
+writing machine. It runs fullscreen on a Raspberry Pi's Linux console (no
+X/Wayland), takes input from a Bluetooth keyboard via `evdev`, and renders to a
+**Waveshare 4.26" e-Paper HAT (800×480, SPI)**.
 
-----------
+Inspired by [ZeroWriter](https://github.com/zerowriter/zerowriter1) (concept) and
+built on [Waveshare's](https://github.com/waveshareteam/e-Paper) `epd4in26`
+driver. This is a clean rewrite for the **4.26"** panel — it does **not** use the
+4.2"-panel drivers bundled in `e-Paper/`.
 
-Zerowriter Ink (all-in-one device) is now available: https://www.crowdsupply.com/zerowriter/zerowriter-ink
+## Status
 
-Interest form / survey for potential future products: https://forms.gle/8dZwQsYdUa9X49WCA 
-----------
+Milestones **M1 (type-and-see loop)** and **M2 (modal editing)** are implemented
+and tested: evdev keyboard → modal state machine → text buffer → refresh decision
+→ renderer → display (PNG mock for development, real panel on the Pi). Refresh
+tuning (M3) is next.
 
-Yo! Check the back of your 4.2" waveshare e-Paper. If it says Rev2.2 or has a V2 sticker, you'll want to use this branch: 
+The editor launches in NORMAL, like vim:
 
-https://github.com/zerowriter/zerowriter1/tree/waveshare_2.2
-The waveshare_2.2 branch is built specifically for the v2 displays. The main branches won't function properly on these displays. Going forward, this will likely be the default branch for the project.
+- **NORMAL** — motions `h j k l`, `w b e`, `0 $`, `gg G`; edits `x`, `dd`; enter
+  INSERT with `i a A I o O`. Refresh is **per action** (instant feedback), and a
+  command that changes nothing (a motion into a wall) skips the refresh so the
+  e-paper isn't redrawn for nothing.
+- **INSERT** — text entry; `Esc` returns to NORMAL.
 
-If it says Rev2.1, you'll want to use these branches:
+The e-paper refresh strategy is the heart of the project: while typing in INSERT
+mode there is **no per-keystroke refresh**. A partial refresh fires on a word
+boundary (space / Enter) or after a short typing pause (debounce, default
+400 ms) — whichever comes first. (Word motions use simplified whitespace-word
+semantics; vertical motion clamps the column rather than remembering it.)
 
-https://github.com/zerowriter/zerowriter1/tree/main_full
-The main_full branch has a bunch of updates and includes a lot of new features.
+## Architecture
 
-This main branch will be discontinued and not further developed.
-I am leaving it as-is because some people may want the simple typewriter with no extra software features. And it is a small codebase.
+```
+editor/    buffer, modal state machine, refresh policy, layout, frame — pure, no deps
+input/     keymap + key decoder (pure) · evdev_source (hardware)
+display/   Display ABC · mock (PNG + logs) · epd4in26 (real panel)
+render.py  Frame → PIL.Image (the only editor module that imports PIL)
+app.py     the event loop (Editor): key → ModalEditor → refresh decision
+main.py    entry point: picks the backend, runs the loop
+config.py  panel size, font, debounce, etc.
+waveshare_epd/  vendored upstream epd4in26 + epdconfig (Waveshare, MIT)
+```
 
-----------
+The editor core speaks plain data (a `Frame`), never pixels, so the whole loop is
+unit-tested with no PIL and no hardware. Only `render.py` and the display
+backends touch PIL; only `display/epd4in26.py` and `input/evdev_source.py` touch
+the Pi.
 
-An easy, DIY eink typewriter running on a raspberry pi zero. Perfect for beginners.
+## Develop (any laptop)
 
-This project is open-source. Do whatever you want with it. Please note the display drivers and waveshare code belongs to them. But buy their displays, they rock.
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest pillow
 
-Credit to: https://penkesu.computer/ for the original project that inspired this.
+.venv/bin/python -m pytest -q          # run the test suite
+.venv/bin/python tools/preview.py      # render sample frames to ./mock_frames/
+.venv/bin/python tools/preview.py "your sentence here"
+```
 
-Components list: https://github.com/zerowriter/zerowriter1/blob/main/componentslist
+`tools/preview.py` drives the real editor loop through the PNG mock, so you can
+eyeball rendering and see the refresh log without any hardware. The pure-logic
+tests (buffer, refresh, keymap, decoder, layout, loop) import nothing beyond the
+stdlib and project code, so they run with **pytest alone — Pillow is not
+required**; the single renderer test auto-skips when Pillow is absent.
 
-pi zero setup steps: https://github.com/zerowriter/zerowriter1/blob/main/how-to-setup-your-pi
+## Deploy on the Raspberry Pi
 
-----------
- 
-The e-Paper directory is modified waveshare drivers. All waveshare code belongs to them. Great company, buy their gadgets!
+Target: Raspberry Pi (Zero WH / Zero 2 W) running Raspberry Pi OS Lite
+(Bookworm), SPI enabled (`raspi-config` → Interface → SPI, or `dtparam=spi=on`).
 
-Use this modified code at your own risk. The modified driver may cause damage to your display. Don't blame me.
+Install dependencies via apt (no slow pip source-builds on ARMv6):
 
-I have included .STL files for the enclosure I have been using. Feel free to use them however you want.
+```bash
+sudo apt install python3-pil python3-evdev python3-spidev python3-gpiozero python3-lgpio
+```
 
-----------
+> **Dependency note (verified against the driver source):** the current upstream
+> `epdconfig.py` drives GPIO through **`gpiozero`** (with the `lgpio` pin factory
+> on Bookworm) and SPI through `spidev` — it does **not** import `RPi.GPIO`, so
+> `python3-rpi-lgpio` is not required by this driver. `python3-numpy` is not used
+> yet (it may help speed up framebuffer packing in a later milestone).
 
-How it works:
+Then pull and run:
 
-Inside the e-Paper directory, I built an application on top of the example code from waveshare. You can find it in e-Paper/RaspberryPiJetsonNano/python/examples main.py
+```bash
+cd ~/writerdeck
+git pull
+python3 main.py            # auto-detects the Pi and uses the epd4in26 panel
+python3 main.py -v         # same, logging each refresh
+python3 main.py --backend mock   # force the PNG mock (writes ./mock_frames/)
+```
 
-The application itself can be modified to do whatever you want (or just leave it be). The basics:
+The Bluetooth keyboard is auto-discovered among `/dev/input/event*`. If it sleeps
+and its device node disappears, the editor keeps polling and reconnects when it
+wakes — it will not crash on a vanished device.
 
-epd.init() clears the screen using slow look up tables -- this prevents artifacting
+## Credits & licensing
 
-epd.init_Partial() runs a faster update using modified LUT. (Ben Krasnow: https://hackaday.com/2017/10/31/ben-krasnow-hacks-e-paper-for-fastest-refresh-rate/) -- important to note this only works with the 4.2" v1 waveshare display.
-
-Use a Pi Zero 2W. Don't use an original Zero. The extra power is very useful.
-
-----------
-
-Setup / Getting Started:
-
-https://github.com/zerowriter/zerowriter1/blob/main/how-to-setup-your-pi
-
-- requires pi zero 2w running bookworm, light install recomend (headless/no GUI)
-- set up ssh and configure your pi zero remotely via terminal or powershell
-- Drop in the e-Paper folder provided in this repo and run main.py from ssh
-- Set up crontab (from command line: crontab -e) to boot to main.py
-
-Hardware Features:
-- 40% keyboard and an eink display
-- tons of storage
-- bring-your-own-battery-pack: 10,000mah battery will yield around 25-30 hours of usage, a lot more if you cut networking
-- or just plug it into something
-- portable! stylish! cool! modified from the https://penkesu.computer/ penkesu computer
-
-Program Features:
-- light weight python typewriter
-- works with any USB keyboard
-- KEYMAPS file to edit key maps if you don't want to program your keyboard's firmware
-- files save in the /data directory where the program resides, access via SMB
-- autosaves the cache every time return is pressed
-- CTRL S saves the cache to a txt file
-- CTRL N starts a new file
-- CTRL ESC turns unit off.
-- (NEW, likely buggy) The arrow keys can be used to navigate through and review previous writing
-- You could easily add an output to google drive or etc
-
-===
-
-Have fun! Happy writing...
-
-===
-
-Steps to use a Bluetooth Keyboard
-
-1. Run `sudo bluetoothctl`
-2. Run `agent on`
-3. Run `default-agent`
-4. Run `scan on`
-5. Wait until you see your device listed (be sure your keyboard is in pairing mode)
-6. Run `scan off`
-7. Run `devices` to list known Bluetooth devices
-8. Run `pair AA:BB:CC:DD:EE:FF` where `AA:BB:CC:DD:EE:FF` is the MAC address of your bluetooth keyboard
-9. You may need to reboot your raspberry pi before python is able to register your bluetooth keyboard.
-
-https://www.youtube.com/watch?v=UEmSsscijKE has a video walkthrough of the above steps as well.
-
+- Concept inspired by **ZeroWriter** (and Penkesu before it).
+- `waveshare_epd/` contains **Waveshare's** `epd4in26.py` and `epdconfig.py`,
+  copied verbatim from the upstream `waveshareteam/e-Paper` repo with their MIT
+  headers intact. All Waveshare code belongs to them — buy their displays.
+- This project's own code is under the repository's [LICENSE](LICENSE).

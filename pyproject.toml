@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# Keep the bundled ZeroWriter e-Paper tree out of collection.
+norecursedirs = ["e-Paper", ".venv", ".git"]

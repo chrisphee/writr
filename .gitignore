@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtualenv (dev tooling only; never deployed to the Pi)
+.venv/
+
+# Mock display output
+mock_frames/
+
+# Editor drafts (user data)
+drafts/
