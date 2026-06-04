@@ -42,6 +42,38 @@ def test_renderer_puts_ink_on_the_panel_for_typed_text():
     assert _ink_pixels(typed) > _ink_pixels(empty)
 
 
+def _pack_like_waveshare_getbuffer(image):
+    """Reference reimplementation of epd4in26.getbuffer()'s landscape branch.
+
+    Mirrors the vendored driver exactly (init 0xFF, clear a bit per black pixel,
+    MSB = leftmost pixel, rows of width/8 bytes) so we can prove that PIL's
+    Image.tobytes() yields the identical framebuffer -- letting us skip the
+    driver's slow pure-Python loop on the Pi.
+    """
+    width, height = image.size
+    pixels = image.load()
+    buf = bytearray([0xFF] * (width // 8 * height))
+    for y in range(height):
+        for x in range(width):
+            if pixels[x, y] == 0:  # black
+                buf[(x + y * width) // 8] &= ~(0x80 >> (x % 8))
+    return bytes(buf)
+
+
+def test_tobytes_matches_the_drivers_getbuffer_packing():
+    config = Config()
+    renderer = Renderer(config)
+    frames = [
+        Frame(lines=("",), cursor=(0, 0), status=""),  # mostly white
+        Frame(lines=("the quick brown fox",), cursor=(0, 4), status="NORMAL  4 words"),
+    ]
+
+    for frame in frames:
+        image = renderer.render(frame)
+        assert image.size == (800, 480) and image.mode == "1"
+        assert image.tobytes() == _pack_like_waveshare_getbuffer(image)
+
+
 def test_cursor_is_drawn_at_a_position_derived_from_the_cursor():
     config = Config()
     renderer = Renderer(config)

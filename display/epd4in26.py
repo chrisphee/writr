@@ -43,9 +43,12 @@ class Epd4in26Display(Display):
 
     def present(self, frame: Frame, *, full: bool) -> None:
         image = self._renderer.render(frame)
-        # NOTE: getbuffer is pure-Python over 800x480 -- slow on the Pi Zero's
-        # single core. Acceptable for M1; a numpy-packed path is an M3 tuning item.
-        buffer = self._epd.getbuffer(image)
+        # The driver's getbuffer() packs 800x480 in a pure-Python double loop --
+        # seconds per refresh on the Pi Zero's single core. For a full-screen
+        # 1-bit image whose width is a multiple of 8, PIL's tobytes() produces the
+        # byte-identical framebuffer in C (see test_tobytes_matches_the_drivers_
+        # getbuffer_packing), so we use it directly and skip the slow loop.
+        buffer = image.tobytes()
         if full or not self._base_written:
             self._epd.display_Base(buffer)
             self._base_written = True
