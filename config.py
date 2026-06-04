@@ -32,5 +32,6 @@ class Config:
     # Clear accumulated ghosting after this many partial refreshes (M3).
     full_refresh_every: int = 30
 
-    # Where drafts live (M4).
+    # Where drafts live (M4); new drafts get this extension.
     drafts_dir: str = "~/drafts"
+    draft_extension: str = ".md"

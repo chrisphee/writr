@@ -7,10 +7,11 @@ behaviour* -- how many refreshes happened, of what kind, and what they showed --
 never on the loop's internals.
 """
 
-from app import Editor, QUIT
+from app import Editor, QUIT, run_picker
 from editor.buffer import TextBuffer
 from editor.modal import Mode, ModalEditor
 from editor.refresh import GhostingCounter, RefreshPolicy
+from picker import FilePicker
 
 
 class FakeClock:
@@ -99,6 +100,74 @@ def test_normal_mode_noop_command_does_not_refresh():
     editor.run()
 
     assert display.calls == []  # nothing moved, so no wasted e-paper refresh
+
+
+def test_show_draws_the_initial_state_once_with_a_full_refresh():
+    display = RecordingDisplay()
+    editor = Editor(
+        state=ModalEditor(TextBuffer.from_text("loaded draft")),
+        policy=RefreshPolicy(),
+        source=ScriptedInput(FakeClock(), [(0, QUIT)]),
+        display=display,
+        now_ms=lambda: 0,
+        poll_ms=100,
+    )
+
+    editor.show()
+
+    assert len(display.calls) == 1
+    kind, frame = display.calls[0]
+    assert kind == "full"
+    assert frame.lines == ("loaded draft",)
+
+
+def test_run_picker_navigates_and_returns_the_chosen_draft():
+    clock = FakeClock()
+    display = RecordingDisplay()
+    picker = FilePicker(["newest.md", "older.md"])
+    source = ScriptedInput(clock, [(5, "j"), (5, "\n")])  # down to older, then open
+
+    chosen = run_picker(picker, source, display, poll_ms=100)
+
+    assert chosen == "older.md"
+    # first frame full (the list), then a partial when the selection moved
+    assert [kind for kind, _ in display.calls] == ["full", "partial"]
+
+
+def test_autosave_persists_text_after_a_word_is_typed():
+    clock = FakeClock()
+    saved = []
+    editor = Editor(
+        state=ModalEditor(TextBuffer(), mode=Mode.INSERT),
+        policy=RefreshPolicy(debounce_ms=400),
+        source=ScriptedInput(clock, [(10, "h"), (10, "i"), (5, " "), (0, QUIT)]),
+        display=RecordingDisplay(),
+        now_ms=lambda: clock.now_ms,
+        poll_ms=100,
+        autosave=saved.append,
+    )
+
+    editor.run()
+
+    assert saved == ["hi "]  # saved once, when the word boundary flushed
+
+
+def test_autosave_does_not_fire_for_a_motion_that_changes_no_text():
+    clock = FakeClock()
+    saved = []
+    editor = Editor(
+        state=ModalEditor(TextBuffer.from_text("hello")),  # NORMAL
+        policy=RefreshPolicy(debounce_ms=400),
+        source=ScriptedInput(clock, [(10, "l"), (0, QUIT)]),
+        display=RecordingDisplay(),
+        now_ms=lambda: clock.now_ms,
+        poll_ms=100,
+        autosave=saved.append,
+    )
+
+    editor.run()
+
+    assert saved == []  # the cursor moved but the text is unchanged
 
 
 def test_a_full_refresh_is_forced_every_n_refreshes_to_clear_ghosting():

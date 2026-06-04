@@ -10,12 +10,15 @@ preview rendering on a laptop without hardware, use tools/preview.py instead.
 import argparse
 import logging
 import time
+from datetime import datetime
 
-from app import Editor
+from app import Editor, run_picker
 from config import Config
+from drafts import DraftStore
 from editor.buffer import TextBuffer
 from editor.modal import ModalEditor
 from editor.refresh import GhostingCounter, RefreshPolicy
+from picker import FilePicker
 
 
 def is_raspberry_pi() -> bool:
@@ -38,6 +41,21 @@ def build_display(backend: str, config: Config):
 
 def monotonic_ms() -> int:
     return time.monotonic_ns() // 1_000_000
+
+
+def open_or_create(store: DraftStore, keyboard, display):
+    """Run the launch picker; return (path, buffer) for the chosen/new draft.
+
+    Returns (None, None) if the picker is dismissed without a choice.
+    """
+    picker = FilePicker(store.list(), label=lambda p: p.name)
+    choice = run_picker(picker, keyboard, display, poll_ms=100)
+    if choice is None:
+        return None, None
+    if choice is FilePicker.NEW:
+        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        return store.new_path(stamp), TextBuffer()
+    return choice, TextBuffer.from_text(store.load(choice))
 
 
 def main(argv=None) -> None:
@@ -67,21 +85,30 @@ def main(argv=None) -> None:
     from input.evdev_source import EvdevKeyboard
 
     keyboard = EvdevKeyboard(device_path=args.device)
-
-    editor = Editor(
-        state=ModalEditor(TextBuffer()),  # launches in NORMAL
-        policy=RefreshPolicy(debounce_ms=config.debounce_ms),
-        source=keyboard,
-        display=display,
-        now_ms=monotonic_ms,
-        poll_ms=100,  # 10Hz idle poll: fine enough to honour the debounce
-        ghosting=GhostingCounter(full_every=config.full_refresh_every),
-    )
+    store = DraftStore(config.drafts_dir, extension=config.draft_extension)
 
     try:
-        editor.run()
-    except KeyboardInterrupt:
-        pass
+        path, buffer = open_or_create(store, keyboard, display)
+        if path is None:
+            return  # picker dismissed; nothing to edit
+
+        editor = Editor(
+            state=ModalEditor(buffer),  # launches in NORMAL
+            policy=RefreshPolicy(debounce_ms=config.debounce_ms),
+            source=keyboard,
+            display=display,
+            now_ms=monotonic_ms,
+            poll_ms=100,  # 10Hz idle poll: fine enough to honour the debounce
+            ghosting=GhostingCounter(full_every=config.full_refresh_every),
+            autosave=lambda text: store.save(path, text),
+        )
+        editor.show()  # draw the opened draft immediately
+        try:
+            editor.run()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            editor.flush()  # persist anything typed within the last debounce window
     finally:
         keyboard.close()
         display.sleep()

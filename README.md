@@ -12,10 +12,16 @@ driver. This is a clean rewrite for the **4.26"** panel — it does **not** use 
 
 ## Status
 
-Milestones **M1 (type-and-see loop)**, **M2 (modal editing)**, and **M3 (refresh
-tuning)** are implemented and tested: evdev keyboard → modal state machine → text
-buffer → refresh decision → renderer → display (PNG mock for development, real
-panel on the Pi). Files/autosave (M4) is next.
+Milestones **M1 (type-and-see loop)**, **M2 (modal editing)**, **M3 (refresh
+tuning)**, and **M4 (files & autosave)** are implemented and tested: launch file
+picker → evdev keyboard → modal state machine → text buffer → refresh decision →
+renderer → display, with crash-safe autosave to `~/drafts/`. Boot integration
+(M5) is next.
+
+On launch you get a **file picker** (drafts most-recent-first, `j/k` to move,
+`Enter` to open, `n` for a new draft). New drafts are named by timestamp
+(`2026-06-04-2153.md`). Every word you type is **autosaved atomically**
+(write-temp → fsync → rename) so a power cut can't lose or corrupt your writing.
 
 The editor launches in NORMAL, like vim:
 
