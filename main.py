@@ -18,7 +18,7 @@ from drafts import DraftStore
 from editor.buffer import TextBuffer
 from editor.frame import Frame
 from editor.modal import ModalEditor
-from editor.refresh import GhostingCounter, RefreshPolicy
+from editor.refresh import RefreshController
 from picker import FilePicker
 
 
@@ -120,12 +120,14 @@ def main(argv=None) -> None:
 
         editor = Editor(
             state=ModalEditor(buffer),  # launches in NORMAL
-            policy=RefreshPolicy(debounce_ms=config.debounce_ms),
+            controller=RefreshController(
+                debounce_ms=config.debounce_ms,
+                full_every=config.full_refresh_every,
+            ),
             source=keyboard,
             display=display,
             now_ms=monotonic_ms,
             poll_ms=100,  # 10Hz idle poll: fine enough to honour the debounce
-            ghosting=GhostingCounter(full_every=config.full_refresh_every),
             autosave=lambda text: store.save(path, text),
         )
         editor.show()  # draw the opened draft immediately

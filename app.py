@@ -1,19 +1,22 @@
 """The editor event loop.
 
 Every collaborator is injected, so the loop has no hardware or PIL dependency of
-its own: the input source yields characters (or None on a poll timeout, or QUIT
+its own: the input source drains characters (a possibly-empty batch, with QUIT
 to stop), the clock yields monotonic milliseconds, and the display accepts
 Frames to present.
 
-The loop hands each key to the ModalEditor and refreshes based on the outcome:
-TEXT (INSERT typing) defers to the debounce policy so we never refresh per
-keystroke; CHANGED (a NORMAL command or a mode switch) refreshes immediately,
-because in NORMAL the user moves slowly and wants instant feedback; NONE does
-nothing. During an INSERT pause, the debounce timeout flushes the batched text.
+Each turn the loop drains *every* keystroke queued right now, applies the whole
+batch to the ModalEditor, and asks the RefreshController for a single decision.
+Draining-then-deciding is what makes a held h/j/k/l (or a fast typing burst)
+collapse to one panel refresh of the final state instead of one slow refresh per
+key. The controller owns the rest: debounce batching while typing, the periodic
+ghosting-clear, and deferring that full refresh to a pause so it never flashes
+mid-word.
 """
 
 from editor.frame import Frame
-from editor.modal import Mode, Outcome
+from editor.modal import Outcome
+from editor.refresh import WORD_BOUNDARY_CHARS, Refresh
 
 # Sentinel an input source returns to ask the loop to stop.
 QUIT = object()
@@ -40,48 +43,63 @@ def run_picker(picker, source, display, poll_ms):
 
 
 class Editor:
-    def __init__(
-        self, *, state, policy, source, display, now_ms, poll_ms, ghosting=None, autosave=None
-    ):
+    def __init__(self, *, state, controller, source, display, now_ms, poll_ms, autosave=None):
         self._state = state
-        self._policy = policy
+        self._controller = controller
         self._source = source
         self._display = display
         self._now_ms = now_ms
         self._poll_ms = poll_ms
-        self._ghosting = ghosting
         self._autosave = autosave
         self._last_saved = state.buffer.text
 
     def run(self) -> None:
         while True:
-            ch = self._source.next(self._poll_ms)
-            if ch is QUIT:
-                break
+            batch = self._source.drain(self._poll_ms)
             now = self._now_ms()
-            if ch is None:
-                # Poll timeout: only INSERT batches text, so only it can be due.
-                if self._state.mode is Mode.INSERT and self._policy.due(now):
-                    self._refresh()
+            if not batch:
+                # Idle poll: let the controller flush batched text or pay a
+                # deferred ghosting-clear if we have now paused long enough.
+                self._act(self._controller.after_idle(now))
                 continue
+            stop = QUIT in batch
+            if stop:
+                batch = batch[: batch.index(QUIT)]  # apply keys typed before quit
+            if batch:
+                summary = self._apply(batch)
+                self._act(self._controller.after_input(now_ms=now, **summary))
+            if stop:
+                break
 
+    def _apply(self, batch) -> dict:
+        """Apply a whole batch of keys; report what it did for the controller."""
+        changed = texted = boundary = commanded = False
+        for ch in batch:
             outcome = self._state.handle(ch)
             if outcome is Outcome.TEXT:
-                if self._policy.note_keystroke(ch, now):
-                    self._refresh()
+                changed = texted = True
+                if ch in WORD_BOUNDARY_CHARS:
+                    boundary = True
             elif outcome is Outcome.CHANGED:
-                self._refresh()
-            # Outcome.NONE: the key did nothing; no refresh.
+                changed = commanded = True
+            # Outcome.NONE: this key did nothing.
+        return {
+            "changed": changed,
+            "texted": texted,
+            "boundary": boundary,
+            "commanded": commanded,
+        }
+
+    def _act(self, decision: Refresh) -> None:
+        if decision is Refresh.NONE:
+            return
+        # Persist before the slow panel transfer so words survive a power cut.
+        self._maybe_autosave()
+        self._present(full=decision is Refresh.FULL)
 
     def show(self) -> None:
         """Draw the current state once (full refresh) -- used on launch/open."""
         self._present(full=True)
-
-    def _refresh(self) -> None:
-        # Persist before the slow panel transfer so words survive a power cut.
-        self._maybe_autosave()
-        full = self._ghosting.next_is_full() if self._ghosting is not None else False
-        self._present(full=full)
 
     def _present(self, full: bool) -> None:
         buffer = self._state.buffer
@@ -91,7 +109,6 @@ class Editor:
             status=f"{self._state.mode.value}  {buffer.word_count} words",
         )
         self._display.present(frame, full=full)
-        self._policy.mark_refreshed()
 
     def _maybe_autosave(self) -> None:
         if self._autosave is None:

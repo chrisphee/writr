@@ -121,11 +121,34 @@ class EvdevKeyboard:
                     pass
 
     def next(self, timeout_ms: int):
-        """Return the next typed character, or None if none within the timeout."""
+        """Return the next typed character, or None if none within the timeout.
+
+        Used by the launch picker, which navigates one keystroke at a time.
+        """
         try:
             return self._chars.get(timeout=timeout_ms / 1000.0)
         except queue.Empty:
             return None
+
+    def drain(self, timeout_ms: int) -> list:
+        """Return every character queued right now (blocking up to timeout for
+        the first), so the editor applies a whole typing/auto-repeat burst at
+        once and refreshes the slow panel a single time instead of once per key.
+
+        This is what stops held h/j/k/l crawling: while the panel renders, the
+        background reader keeps filling the queue; the next drain() scoops the
+        entire backlog and the editor jumps straight to the final state.
+        """
+        chars: list = []
+        try:
+            chars.append(self._chars.get(timeout=timeout_ms / 1000.0))
+        except queue.Empty:
+            return chars  # nothing within the poll window
+        while True:  # got at least one -- sweep the rest without blocking
+            try:
+                chars.append(self._chars.get_nowait())
+            except queue.Empty:
+                return chars
 
     def _key_name(self, code):
         name = self._ecodes.KEY.get(code)

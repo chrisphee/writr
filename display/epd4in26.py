@@ -12,11 +12,21 @@ The method names below are taken verbatim from the vendored upstream
   getbuffer(image)    PIL 1-bit image -> packed byte buffer (expects 800x480)
   display_Base(buf)   full refresh AND store the base image partial diffs against
   display_Partial(buf) fast (~0.7s) partial refresh
+  TurnOnDisplay_Fast() activate the fast (~1.5s) full-update waveform
   sleep()             deep sleep + release GPIO/SPI
 
-Refresh model: the first frame and every ``full`` refresh go through
-display_Base (which both clears ghosting with the full waveform and re-arms the
-partial base); everything else is a display_Partial.
+Refresh model:
+  * The first frame goes through display_Base -- a slow (~4s) full refresh that
+    lays down a pristine base for partial diffs.
+  * Every later ``full`` (the periodic ghosting-clear) re-arms that base the same
+    way -- writing both the BW (0x24) and base (0x26) RAM -- but triggers the
+    FAST waveform (~1.5s) instead of the slow one, so the screen-clearing flash
+    is quick. The RefreshController only ever asks for this at a typing pause.
+  * Everything else is a display_Partial.
+
+The fast-base path drives the vendored driver's own primitives (send_command /
+send_data2 / TurnOnDisplay_Fast); it is the only backend that touches the panel
+and is verified by hand on the Pi, never by the automated suite.
 """
 
 import logging
@@ -49,13 +59,28 @@ class Epd4in26Display(Display):
         # byte-identical framebuffer in C (see test_tobytes_matches_the_drivers_
         # getbuffer_packing), so we use it directly and skip the slow loop.
         buffer = image.tobytes()
-        if full or not self._base_written:
+        if not self._base_written:
+            # First frame: slow, pristine full refresh that arms the partial base.
             self._epd.display_Base(buffer)
             self._base_written = True
-            logger.info("full refresh")
+            logger.info("full refresh (base)")
+        elif full:
+            self._fast_base(buffer)
+            logger.info("full refresh (fast)")
         else:
             self._epd.display_Partial(buffer)
             logger.info("partial refresh")
+
+    def _fast_base(self, buffer) -> None:
+        # Mirror display_Base -- write BW RAM (0x24) and base RAM (0x26) so the
+        # following partials still diff cleanly -- but drive it with the fast
+        # update sequence (~1.5s) instead of display_Base's slow one (~4s).
+        epd = self._epd
+        epd.send_command(0x24)
+        epd.send_data2(buffer)
+        epd.send_command(0x26)
+        epd.send_data2(buffer)
+        epd.TurnOnDisplay_Fast()
 
     def sleep(self) -> None:
         self._epd.sleep()

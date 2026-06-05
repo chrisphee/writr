@@ -19,7 +19,7 @@ from config import Config
 from display.mock import MockDisplay
 from editor.buffer import TextBuffer
 from editor.modal import Mode, ModalEditor
-from editor.refresh import RefreshPolicy
+from editor.refresh import RefreshController
 
 DEFAULT_TEXT = "the quick brown fox jumps\nover the lazy dog"
 
@@ -46,6 +46,16 @@ class _ScriptedKeyboard:
         self._clock.advance(advance)
         return value
 
+    def drain(self, timeout_ms):
+        advance, value = self._steps[self._i]
+        self._i += 1
+        self._clock.advance(advance)
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return list(value)
+        return [value]
+
 
 def _steps_for(text, per_key_ms=80, debounce_ms=400):
     steps = [(per_key_ms, ch) for ch in text]
@@ -65,7 +75,9 @@ def main(argv=None):
     editor = Editor(
         # Start in INSERT so the scripted sentence is typed, not run as commands.
         state=ModalEditor(TextBuffer(), mode=Mode.INSERT),
-        policy=RefreshPolicy(debounce_ms=config.debounce_ms),
+        controller=RefreshController(
+            debounce_ms=config.debounce_ms, full_every=config.full_refresh_every
+        ),
         source=_ScriptedKeyboard(clock, _steps_for(text, debounce_ms=config.debounce_ms)),
         display=display,
         now_ms=lambda: clock.now_ms,

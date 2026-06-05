@@ -27,9 +27,8 @@ On launch you get a **file picker** (drafts most-recent-first, `j/k` to move,
 The editor launches in NORMAL, like vim:
 
 - **NORMAL** — motions `h j k l`, `w b e`, `0 $`, `gg G`; edits `x`, `dd`; enter
-  INSERT with `i a A I o O`. Refresh is **per action** (instant feedback), and a
-  command that changes nothing (a motion into a wall) skips the refresh so the
-  e-paper isn't redrawn for nothing.
+  INSERT with `i a A I o O`. A command that changes nothing (a motion into a
+  wall) skips the refresh so the e-paper isn't redrawn for nothing.
 - **INSERT** — text entry; `Esc` returns to NORMAL.
 
 The e-paper refresh strategy is the heart of the project: while typing in INSERT
@@ -38,13 +37,23 @@ boundary (space / Enter) or after a short typing pause (debounce, default
 400 ms) — whichever comes first. (Word motions use simplified whitespace-word
 semantics; vertical motion clamps the column rather than remembering it.)
 
-**Refresh tuning (M3).** Partial refreshes accumulate ghosting, so every Nth
-refresh (`full_refresh_every`, default 30) is promoted to a full,
-ghosting-clearing refresh. Timings are configurable in [config.py](config.py)
-(`debounce_ms`, `full_refresh_every`). The vendored `epd4in26.display_Partial`
-resets the panel window to full-screen and writes the whole framebuffer, so it
-does **not** expose arbitrary-region partial updates — the editor therefore uses
-full-frame partials, which the panel handles in ~0.7s.
+**Coalescing.** Each loop turn drains *every* keystroke queued right now, applies
+the whole batch, and refreshes **once** to the resulting state. So a held
+`h/j/k/l` (auto-repeat) or a fast typing burst that piles up while the panel is
+busy collapses to a single refresh of the final position — instead of one slow
+~0.7s refresh per key, which made held motions crawl.
+
+**Refresh tuning.** Partial refreshes accumulate ghosting, so after
+`full_refresh_every` (default 30) refreshes one is promoted to a full,
+ghosting-clearing refresh. That full is **deferred until you pause**
+(`debounce_ms`) — it never flashes the whole screen mid-word or mid-scroll — and
+it runs on the panel's **fast waveform** (~1.5s) rather than the slow one (~4s);
+the very first frame still uses the slow waveform to lay down a clean base.
+The whole when/how decision lives in one place, `RefreshController`
+([editor/refresh.py](editor/refresh.py)); timings are in [config.py](config.py).
+The vendored `epd4in26.display_Partial` resets the panel window to full-screen
+and writes the whole framebuffer, so it does **not** expose arbitrary-region
+partial updates — the editor uses full-frame partials, ~0.7s each.
 
 ## Architecture
 
@@ -134,8 +143,53 @@ journalctl -u writerdeck -f          # watch its logs
 The service runs `main.py` as user `ratthew`, waits for the keyboard, restarts on
 failure, and needs no TTY (input is evdev, output is the SPI panel). Edit the
 unit's `User`/paths if you deploy elsewhere. Prefer cron? A `@reboot` crontab
-entry (`@reboot cd ~/writerdeck && python3 main.py`) also works but won't restart
+entry (`@reboot cd ~/writr && python3 main.py`) also works but won't restart
 on crash.
+
+### Updating & operating it day-to-day
+
+The editor runs as a service, so after pulling new code you must **restart the
+service** for it to take effect. Almost always two commands:
+
+```bash
+cd ~/writr && git pull
+sudo systemctl restart writerdeck.service
+```
+
+Two exceptions:
+
+- **You pulled a change to `deploy/writerdeck.service` itself** — re-copy it and
+  reload systemd before restarting:
+  ```bash
+  sudo cp deploy/writerdeck.service /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl restart writerdeck.service
+  ```
+- **A change adds a new apt dependency** — `sudo apt install …` it first.
+
+**Only one process can hold the panel and keyboard at a time.** To run the editor
+by hand and watch its refresh logs live (useful while tuning), stop the service
+first, then start it again when done — don't run both at once:
+
+```bash
+sudo systemctl stop writerdeck.service
+cd ~/writr && git pull
+python3 main.py -v          # logs each refresh to the terminal; Ctrl-C to quit
+sudo systemctl start writerdeck.service
+```
+
+Check health or diagnose a failure to start at any time:
+
+```bash
+systemctl status writerdeck.service --no-pager
+journalctl -u writerdeck -f                       # live logs
+journalctl -u writerdeck -b --no-pager | tail -n 40   # why it died this boot
+```
+
+Common start failures: `status=200/CHDIR` (the unit's `WorkingDirectory` doesn't
+match where you cloned the repo), a permission error on `/dev/spidev*` or
+`/dev/input/*` (the `ratthew` user isn't in the `input,spi,gpio` groups yet — see
+above, then log out/in), or `ModuleNotFoundError` (an apt dependency is missing).
 
 ## Credits & licensing
 

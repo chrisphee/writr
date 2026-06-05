@@ -10,7 +10,7 @@ never on the loop's internals.
 from app import Editor, QUIT, run_picker
 from editor.buffer import TextBuffer
 from editor.modal import Mode, ModalEditor
-from editor.refresh import GhostingCounter, RefreshPolicy
+from editor.refresh import RefreshController
 from picker import FilePicker
 
 
@@ -27,8 +27,10 @@ class FakeClock:
 class ScriptedInput:
     """Replays a script of (advance_ms, value) steps.
 
-    value is a character, None (a poll timeout with no key), or QUIT to stop the
-    loop. Each step advances the shared clock first, mimicking real elapsed time.
+    value is a character, a list of characters (a burst that arrives together,
+    e.g. an auto-repeat held key), None (a poll timeout with no key), or QUIT to
+    stop the loop. Each step advances the shared clock first, mimicking real
+    elapsed time.
     """
 
     def __init__(self, clock, script):
@@ -36,11 +38,21 @@ class ScriptedInput:
         self._script = list(script)
         self._i = 0
 
-    def next(self, timeout_ms):
+    def next(self, timeout_ms):  # used by the launch picker (one key at a time)
         advance, value = self._script[self._i]
         self._i += 1
         self._clock.advance(advance)
         return value
+
+    def drain(self, timeout_ms):  # used by the editor loop (whole burst at once)
+        advance, value = self._script[self._i]
+        self._i += 1
+        self._clock.advance(advance)
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return list(value)
+        return [value]
 
 
 class RecordingDisplay:
@@ -59,7 +71,7 @@ def build_editor(clock, script, display, debounce_ms=400):
     # start in INSERT (the editor itself launches in NORMAL).
     return Editor(
         state=ModalEditor(TextBuffer(), mode=Mode.INSERT),
-        policy=RefreshPolicy(debounce_ms=debounce_ms),
+        controller=RefreshController(debounce_ms=debounce_ms),
         source=ScriptedInput(clock, script),
         display=display,
         now_ms=lambda: clock.now_ms,
@@ -72,7 +84,7 @@ def test_normal_mode_command_refreshes_immediately_no_debounce_wait():
     display = RecordingDisplay()
     editor = Editor(
         state=ModalEditor(TextBuffer.from_text("hello")),  # NORMAL
-        policy=RefreshPolicy(debounce_ms=400),
+        controller=RefreshController(debounce_ms=400),
         source=ScriptedInput(clock, [(10, "l"), (0, QUIT)]),
         display=display,
         now_ms=lambda: clock.now_ms,
@@ -90,7 +102,7 @@ def test_normal_mode_noop_command_does_not_refresh():
     display = RecordingDisplay()
     editor = Editor(
         state=ModalEditor(TextBuffer.from_text("hello")),  # cursor at (0,0)
-        policy=RefreshPolicy(debounce_ms=400),
+        controller=RefreshController(debounce_ms=400),
         source=ScriptedInput(clock, [(10, "h"), (0, QUIT)]),  # 'h' into the left wall
         display=display,
         now_ms=lambda: clock.now_ms,
@@ -106,7 +118,7 @@ def test_show_draws_the_initial_state_once_with_a_full_refresh():
     display = RecordingDisplay()
     editor = Editor(
         state=ModalEditor(TextBuffer.from_text("loaded draft")),
-        policy=RefreshPolicy(),
+        controller=RefreshController(),
         source=ScriptedInput(FakeClock(), [(0, QUIT)]),
         display=display,
         now_ms=lambda: 0,
@@ -139,7 +151,7 @@ def test_autosave_persists_text_after_a_word_is_typed():
     saved = []
     editor = Editor(
         state=ModalEditor(TextBuffer(), mode=Mode.INSERT),
-        policy=RefreshPolicy(debounce_ms=400),
+        controller=RefreshController(debounce_ms=400),
         source=ScriptedInput(clock, [(10, "h"), (10, "i"), (5, " "), (0, QUIT)]),
         display=RecordingDisplay(),
         now_ms=lambda: clock.now_ms,
@@ -157,7 +169,7 @@ def test_autosave_does_not_fire_for_a_motion_that_changes_no_text():
     saved = []
     editor = Editor(
         state=ModalEditor(TextBuffer.from_text("hello")),  # NORMAL
-        policy=RefreshPolicy(debounce_ms=400),
+        controller=RefreshController(debounce_ms=400),
         source=ScriptedInput(clock, [(10, "l"), (0, QUIT)]),
         display=RecordingDisplay(),
         now_ms=lambda: clock.now_ms,
@@ -170,23 +182,63 @@ def test_autosave_does_not_fire_for_a_motion_that_changes_no_text():
     assert saved == []  # the cursor moved but the text is unchanged
 
 
-def test_a_full_refresh_is_forced_every_n_refreshes_to_clear_ghosting():
+def test_the_ghosting_full_refresh_is_deferred_until_a_pause():
     clock = FakeClock()
     display = RecordingDisplay()
     editor = Editor(
         state=ModalEditor(TextBuffer.from_text("l0\nl1\nl2\nl3\nl4\nl5\nl6")),  # NORMAL
-        policy=RefreshPolicy(debounce_ms=400),
-        source=ScriptedInput(clock, [(5, "j")] * 6 + [(0, QUIT)]),  # 6 down moves
+        controller=RefreshController(debounce_ms=400, full_every=3),
+        # six down moves with no gap, then a pause
+        source=ScriptedInput(clock, [(5, "j")] * 6 + [(500, None), (0, QUIT)]),
         display=display,
         now_ms=lambda: clock.now_ms,
         poll_ms=100,
-        ghosting=GhostingCounter(full_every=3),
     )
 
     editor.run()
 
     kinds = [kind for kind, _ in display.calls]
-    assert kinds == ["partial", "partial", "full", "partial", "partial", "full"]
+    # No full ever interrupts the motion; the ghosting-clear waits for the pause.
+    assert kinds == ["partial"] * 6 + ["full"]
+
+
+def test_holding_a_motion_key_coalesces_into_a_single_refresh():
+    clock = FakeClock()
+    display = RecordingDisplay()
+    editor = Editor(
+        state=ModalEditor(TextBuffer.from_text("l0\nl1\nl2\nl3\nl4")),  # NORMAL, cursor (0,0)
+        controller=RefreshController(debounce_ms=400),
+        # three auto-repeat 'j's arrive together while the panel was busy
+        source=ScriptedInput(clock, [(5, ["j", "j", "j"]), (0, QUIT)]),
+        display=display,
+        now_ms=lambda: clock.now_ms,
+        poll_ms=100,
+    )
+
+    editor.run()
+
+    kinds = [kind for kind, _ in display.calls]
+    assert kinds == ["partial"]  # one refresh for the whole burst, not three
+    assert display.calls[-1][1].cursor == (3, 0)  # jumped straight to the final row
+
+
+def test_a_fast_typing_burst_refreshes_once_to_the_final_text():
+    clock = FakeClock()
+    display = RecordingDisplay()
+    editor = Editor(
+        state=ModalEditor(TextBuffer(), mode=Mode.INSERT),
+        controller=RefreshController(debounce_ms=400),
+        source=ScriptedInput(clock, [(5, list("hi yo ")), (0, QUIT)]),
+        display=display,
+        now_ms=lambda: clock.now_ms,
+        poll_ms=100,
+    )
+
+    editor.run()
+
+    kinds = [kind for kind, _ in display.calls]
+    assert kinds == ["partial"]  # two words' worth of spaces, still one refresh
+    assert display.calls[-1][1].lines == ("hi yo ",)
 
 
 def test_typing_a_word_then_a_space_causes_exactly_one_partial_refresh():
