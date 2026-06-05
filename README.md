@@ -104,7 +104,7 @@ ship it. Without it the editor still runs but falls back to a tiny bitmap font.)
 Then pull and run:
 
 ```bash
-cd ~/writerdeck
+cd ~/writr
 git pull
 python3 main.py            # auto-detects the Pi and uses the epd4in26 panel
 python3 main.py -v         # same, logging each refresh
@@ -125,7 +125,7 @@ sudo usermod -aG input,spi,gpio ratthew   # log out/in (or reboot) afterwards
 ### Run on boot (systemd)
 
 ```bash
-sudo cp ~/writerdeck/deploy/writerdeck.service /etc/systemd/system/
+sudo cp ~/writr/deploy/writerdeck.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now writerdeck.service
 journalctl -u writerdeck -f          # watch its logs

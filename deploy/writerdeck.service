@@ -7,7 +7,7 @@ Wants=bluetooth.target
 [Service]
 Type=simple
 User=ratthew
-WorkingDirectory=/home/ratthew/writerdeck
+WorkingDirectory=/home/ratthew/writr
 ExecStart=/usr/bin/python3 main.py
 # A writerdeck should always come back up if it falls over.
 Restart=on-failure
